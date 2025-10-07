@@ -1,38 +1,198 @@
-# /api/redirect.py - SIMPLE DEBUG VERSION
+# /api/redirect.py - FIXED VERSION with proper sanitization
 
 from http.server import BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs, quote
+from urllib.parse import urlparse, parse_qs
 import re
 
 BOT_USERNAME = "PremiumtelenovelasBot"
 
+def sanitize_for_telegram(text):
+    """
+    Sanitizes text to be safe for Telegram deep links.
+    Only allows: letters, numbers, underscores, and hyphens.
+    """
+    # Replace any character that's not alphanumeric, underscore, or hyphen with underscore
+    sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', text)
+    # Remove any consecutive underscores
+    sanitized = re.sub(r'_+', '_', sanitized)
+    # Remove leading/trailing underscores
+    sanitized = sanitized.strip('_')
+    return sanitized
+
 class handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        # Parse URL
-        parsed = urlparse(self.path)
-        params = parse_qs(parsed.query)
-        
-        # Convert to simple dict
-        simple_params = {}
-        for key, value in params.items():
-            simple_params[key] = value[0] if len(value) == 1 else value
-        
-        # Get tx_ref from Flutterwave
-        tx_ref = simple_params.get('tx_ref')
-        
-        # Sanitize tx_ref: remove or replace special characters that break Telegram deep links
-        if tx_ref:
-            # Remove parentheses, spaces, and other special characters
-            tx_ref = re.sub(r'[^\w\-]', '_', tx_ref)
-            payload = f"verify_{tx_ref}"
-            # URL encode the payload for safety
-            encoded_payload = quote(payload, safe='')
-        else:
-            payload = None
-            encoded_payload = None
-        
-        # Create HTML response showing everything
-        self.send_response(200)
+        try:
+            # Parse URL
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+            
+            # Convert to simple dict
+            simple_params = {}
+            for key, value in params.items():
+                simple_params[key] = value[0] if len(value) == 1 else value
+            
+            # Get tx_ref from Flutterwave
+            tx_ref = simple_params.get('tx_ref')
+            status = simple_params.get('status', 'unknown')
+            
+            if not tx_ref:
+                self.send_error_page("No transaction reference found")
+                return
+            
+            # Sanitize tx_ref for Telegram deep link
+            sanitized_tx_ref = sanitize_for_telegram(tx_ref)
+            payload = f"verify_{sanitized_tx_ref}"
+            
+            # Create Telegram deep link
+            telegram_url = f"https://t.me/{BOT_USERNAME}?start={payload}"
+            
+            # Send success page with auto-redirect
+            self.send_response(200)
+            self.send_header('Content-type', 'text/html')
+            self.end_headers()
+            
+            html = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Payment Processing</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <style>
+                    body {{ 
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                        display: flex;
+                        justify-content: center;
+                        align-items: center;
+                        min-height: 100vh;
+                        margin: 0;
+                        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                        color: white;
+                    }}
+                    .container {{ 
+                        background: rgba(255, 255, 255, 0.95);
+                        padding: 40px;
+                        border-radius: 16px;
+                        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+                        max-width: 500px;
+                        text-align: center;
+                        color: #333;
+                    }}
+                    .success-icon {{
+                        font-size: 64px;
+                        margin-bottom: 20px;
+                    }}
+                    h1 {{
+                        color: #2c3e50;
+                        margin-bottom: 10px;
+                    }}
+                    .status {{
+                        display: inline-block;
+                        padding: 8px 16px;
+                        background: #4caf50;
+                        color: white;
+                        border-radius: 20px;
+                        margin: 15px 0;
+                        font-weight: bold;
+                    }}
+                    .info {{
+                        background: #f5f5f5;
+                        padding: 15px;
+                        border-radius: 8px;
+                        margin: 20px 0;
+                        font-size: 14px;
+                        color: #666;
+                    }}
+                    .button {{
+                        display: inline-block;
+                        padding: 12px 30px;
+                        background: #667eea;
+                        color: white;
+                        text-decoration: none;
+                        border-radius: 8px;
+                        font-weight: bold;
+                        margin-top: 20px;
+                        transition: background 0.3s;
+                    }}
+                    .button:hover {{
+                        background: #5568d3;
+                    }}
+                    .spinner {{
+                        border: 3px solid #f3f3f3;
+                        border-top: 3px solid #667eea;
+                        border-radius: 50%;
+                        width: 40px;
+                        height: 40px;
+                        animation: spin 1s linear infinite;
+                        margin: 20px auto;
+                    }}
+                    @keyframes spin {{
+                        0% {{ transform: rotate(0deg); }}
+                        100% {{ transform: rotate(360deg); }}
+                    }}
+                    .countdown {{
+                        font-size: 18px;
+                        color: #667eea;
+                        margin: 15px 0;
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <div class="success-icon">✅</div>
+                    <h1>Payment {status.capitalize()}!</h1>
+                    <div class="status">Transaction Verified</div>
+                    
+                    <div class="info">
+                        <strong>Transaction ID:</strong><br>
+                        {sanitized_tx_ref[:30]}...
+                    </div>
+                    
+                    <div class="spinner"></div>
+                    <div class="countdown">Redirecting in <span id="countdown">3</span> seconds...</div>
+                    
+                    <p style="color: #666; margin: 20px 0;">
+                        You will be redirected to Telegram to complete your subscription activation.
+                    </p>
+                    
+                    <a href="{telegram_url}" class="button">Continue to Telegram</a>
+                    
+                    <p style="color: #999; font-size: 12px; margin-top: 20px;">
+                        If you're not redirected automatically, click the button above.
+                    </p>
+                </div>
+                
+                <script>
+                    // Countdown timer
+                    let seconds = 3;
+                    const countdownEl = document.getElementById('countdown');
+                    
+                    const timer = setInterval(function() {{
+                        seconds--;
+                        countdownEl.textContent = seconds;
+                        
+                        if (seconds <= 0) {{
+                            clearInterval(timer);
+                            window.location.href = '{telegram_url}';
+                        }}
+                    }}, 1000);
+                    
+                    // Fallback redirect
+                    setTimeout(function() {{
+                        window.location.href = '{telegram_url}';
+                    }}, 3000);
+                </script>
+            </body>
+            </html>
+            """
+            
+            self.wfile.write(html.encode())
+            
+        except Exception as e:
+            self.send_error_page(f"Error: {str(e)}")
+    
+    def send_error_page(self, message):
+        """Send an error page"""
+        self.send_response(400)
         self.send_header('Content-type', 'text/html')
         self.end_headers()
         
@@ -40,98 +200,35 @@ class handler(BaseHTTPRequestHandler):
         <!DOCTYPE html>
         <html>
         <head>
-            <title>Debug - Payment Redirect</title>
+            <title>Payment Error</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <style>
                 body {{ 
-                    font-family: Arial, sans-serif; 
-                    padding: 20px; 
-                    background: #f5f5f5;
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    min-height: 100vh;
+                    margin: 0;
+                    background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
                 }}
                 .container {{ 
-                    background: white; 
-                    padding: 20px; 
-                    border-radius: 8px; 
-                    max-width: 800px; 
-                    margin: 0 auto;
+                    background: white;
+                    padding: 40px;
+                    border-radius: 16px;
+                    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+                    max-width: 500px;
+                    text-align: center;
                 }}
-                .param {{ 
-                    background: #e3f2fd; 
-                    padding: 10px; 
-                    margin: 5px 0; 
-                    border-left: 3px solid #2196f3;
-                }}
-                .success {{ color: green; }}
-                .error {{ color: red; }}
-                pre {{ 
-                    background: #f4f4f4; 
-                    padding: 10px; 
-                    overflow-x: auto;
-                }}
+                .error-icon {{ font-size: 64px; }}
             </style>
         </head>
         <body>
             <div class="container">
-                <h1>🔍 Payment Redirect Debug</h1>
-                
-                <h2>Full URL Received:</h2>
-                <pre>{self.path}</pre>
-                
-                <h2>Parameters Received:</h2>
-                <div>
-        """
-        
-        if simple_params:
-            for key, value in simple_params.items():
-                html += f'<div class="param"><strong>{key}:</strong> {value}</div>'
-        else:
-            html += '<p class="error">❌ No parameters received!</p>'
-        
-        html += """
-                </div>
-                
-                <h2>Looking for these parameters:</h2>
-                <ul>
-                    <li><strong>tx_ref</strong> - Transaction reference from Flutterwave</li>
-                    <li><strong>status</strong> - Payment status</li>
-                    <li><strong>transaction_id</strong> - Flutterwave transaction ID</li>
-                </ul>
-        """
-        
-        # Try to redirect if we have tx_ref
-        tx_ref = simple_params.get('tx_ref')
-        if tx_ref:
-            payload = f"verify_{tx_ref}"
-            telegram_url = f"https://t.me/{BOT_USERNAME}?start={payload}"
-            html += f"""
-                <hr>
-                <h2 class="success">✅ Found tx_ref! Creating redirect...</h2>
-                <p><strong>Transaction Reference:</strong> {tx_ref}</p>
-                <p><strong>Payload Created:</strong> {payload}</p>
-                <p><strong>Telegram URL:</strong> <a href="{telegram_url}">{telegram_url}</a></p>
-                
-                <script>
-                    // Auto-redirect after 3 seconds
-                    setTimeout(function() {{
-                        window.location.href = '{telegram_url}';
-                    }}, 3000);
-                </script>
-                
-                <p>Redirecting in 3 seconds... <a href="{telegram_url}">Click here to redirect now</a></p>
-            """
-        else:
-            html += """
-                <hr>
-                <h2 class="error">❌ No tx_ref found!</h2>
-                <p>This means Flutterwave is not sending the transaction reference.</p>
-                <p><strong>Possible issues:</strong></p>
-                <ul>
-                    <li>The redirect_url in Flutterwave payment might be incorrect</li>
-                    <li>This is a direct visit to the page (not from Flutterwave)</li>
-                    <li>Flutterwave changed their redirect format</li>
-                </ul>
-            """
-        
-        html += """
+                <div class="error-icon">❌</div>
+                <h1>Payment Error</h1>
+                <p>{message}</p>
+                <p>Please contact support if this issue persists.</p>
             </div>
         </body>
         </html>
